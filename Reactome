@@ -1,0 +1,70 @@
+library(ReactomePA)
+library(clusterProfiler)
+library(stringr)
+library(ggplot2)
+
+args <- commandArgs(T)
+ref <- args[1]
+genelist <- args[2]
+outdir <- args[3]
+top <- args[4]
+
+GetGeneType<-function(df,filename){
+  if(str_detect(df[1,1],"EN")){
+    if( str_detect(df[1,1],"T") )
+      return("ENSEMBLTRANS")
+    else
+      return("ENSEMBL")
+  }else if(is.na(as.integer(df[1,1])) == F){
+    return("ENTREZID")
+  }else if(str_detect(df[1,1],"AT")){
+    return("TAIR")
+  }
+  else{
+    return("SYMBOL")
+  }
+}
+
+sample_name <- strsplit( basename(genelist) ,split=".",fixed=TRUE)[[1]][1]
+
+df <- read.table(file=genelist,sep='\t',header=F)
+setwd(outdir)
+input_type = GetGeneType(df,genelist)
+if(ref=='hs'){
+  suppressMessages(library(org.Hs.eg.db))
+  Db <- org.Hs.eg.db
+  organism <- 'hsa'
+  ref <- 'human'
+}else if(ref=='mm'){
+  suppressMessages(library(org.Mm.eg.db))
+  Db <- org.Mm.eg.db
+  organism <- 'mmu'
+  ref <- 'mouse'
+}else if( ref =='rn'){
+  suppressMessages(library(org.Rn.eg.db))
+  Db <- org.Rn.eg.db
+  organism <- 'rno'
+  ref <- 'rat'
+}
+
+bitrdf <- bitr(df[,1],fromType=input_type,toType="ENTREZID",OrgDb = Db)
+Reactome <- as.data.frame(enrichPathway(gene=bitrdf[,'ENTREZID'] , pvalueCutoff = 1, readable=TRUE, organism = ref))
+write.table(Reactome,paste0(sample_name,".Reactome.xls"),sep="\t",quote=F,row.names=F)
+sigdf <- subset(Reactome, pvalue < 0.05)
+write.table(sigdf,paste0(sample_name,".SigReactome.xls"),sep="\t",quote=F,row.names=F)
+
+library(tidyverse)
+plotdf <- separate(data = sigdf, col = BgRatio, into = c("BgCount", "BgAll"), sep = "/")
+plotdf$BgCount = as.integer(plotdf$BgCount)
+plotdf$RichFactor <- plotdf$Count / plotdf$BgCount
+plotdf <- plotdf[order(plotdf$pvalue),]
+plotdf <- head(plotdf,top)
+p <- ggplot(data = plotdf,mapping = aes(x = RichFactor,y = reorder(Description,RichFactor)))+
+  geom_point(aes(color= pvalue,size = Count)) +
+  scale_colour_gradient(low = "red", high = "blue") +
+  theme_bw()+
+  labs(title = paste('Top',nrow(plotdf),'of Pathway Enrichment'),
+       x = 'Rich factor',
+       y = 'Pathway')+ scale_size("GeneNumber")+theme(plot.title = element_text(hjust = 0.5))
+ggsave(paste0(sample_name,".bubble.png"), width = 8.5)
+ggsave(paste0(sample_name,".bubble.pdf"), width = 8.5)
