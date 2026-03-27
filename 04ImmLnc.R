@@ -129,3 +129,85 @@ write.csv(sig_pairs,file = "C:/Users/Dell/Desktop/ImmuLnc/sig_pairs.csv")
 fgseaRes_all1 <- select(fgseaRes_all,-leadingEdge)
 write.csv(fgseaRes_all1,file = "C:/Users/Dell/Desktop/ImmuLnc/fgseaRes_all.csv")
 saveRDS(gsea.Res,file = "C:/Users/Dell/Desktop/ImmuLnc/gsea.Res.RData")
+
+data <- read.csv("E:/RCD/data/cancer/UCEC/rcdlnc/fgseaRes_all.csv",row.names = 1)
+data <- data[data$padj<0.05,]
+head(data)
+library(dplyr)
+library(ggplot2)
+cutoffs <- c(0.99, 0.991, 0.992,0.993, 0.994, 0.995, 0.996, 0.997, 0.998,0.999)
+count_list <- numeric(length(cutoffs))
+for (i in 1:length(cutoffs)) {
+  threshold <- cutoffs[i]
+  # 筛选绝对值大于当前阈值的行，并统计唯一的 lncRNA 数量
+  filtered_data <- data %>% filter(abs(sigValue) > threshold)
+  count_list[i] <- n_distinct(filtered_data$lncRNA) 
+}
+
+# 3. 将结果整合为数据框，用于画图
+plot_df <- data.frame(
+  Threshold = cutoffs,
+  lncRNA_Count = count_list
+)
+
+# 查看一下统计结果
+print(plot_df)
+
+data <- read.csv("D:/Project/03SCI/250710_LncRCD/Computational and Structural Biotechnology Journal/Supplementary/data",row.names =1)
+library(tidyr)
+library(tibble)
+plot_df <- data %>%
+  # 将行名转换为名为 "CancerType" 的新列 (如果你的癌症名已经是第一列，请注释掉这行)
+  rownames_to_column(var = "CancerType") %>%
+  # 将所有以 X 开头的列转换成长格式
+  pivot_longer(
+    cols = starts_with("X"), 
+    names_to = "Threshold", 
+    values_to = "lncRNA_Count"
+  ) %>%
+  # 去掉 Threshold 列名中的 "X" 并转换为数字类型
+  mutate(Threshold = as.numeric(gsub("^X", "", Threshold)))
+print(head(plot_df))
+
+p_overlap <- ggplot(plot_df, aes(x = Threshold, y = lncRNA_Count, group = CancerType, color = CancerType)) +
+  
+  # 绘制所有癌症的折线
+  geom_line(size = 0.8, alpha = 0.7) + 
+  
+  # 绘制所有点
+  geom_point(size = 1.5) +
+  
+  # 关键：添加一条加粗的红色虚线在 0.995 处，贯穿所有折线
+  geom_vline(xintercept = 0.995, linetype = "dashed", color = "red", size = 1.2) +
+  
+  # 在 0.995 处添加文字标注
+  annotate("text", x = 0.994, y = max(plot_df$lncRNA_Count), 
+           label = "Threshold = 0.995", color = "red", angle = 90, vjust = -0.5, fontface = "bold") +
+  
+  # 设置经典主题
+  theme_classic() +
+  
+  # 细节美化
+  labs(
+    title = "Sensitivity Analysis: lncRNA Count vs. lncRES Threshold",
+    subtitle = "Consistent trend observed across 18 cancer types",
+    x = "Absolute lncRES Threshold (|sigValue| > x)",
+    y = "Number of Retained Unique lncRNAs",
+    color = "Cancer Type" # 图例标题
+  ) +
+  
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 16),
+    plot.subtitle = element_text(hjust = 0.5, size = 12, color = "gray30"),
+    axis.title = element_text(face = "bold", size = 12),
+    axis.text = element_text(size = 11, color = "black"),
+    # 如果癌症太多，图例可以放在右侧或底部
+    legend.position = "right", 
+    legend.text = element_text(size = 9)
+  ) +
+  
+  # 强制显示所有的测试阈值作为刻度
+  scale_x_continuous(breaks = c(0.9, 0.95, 0.98, 0.99, 0.995, 0.999))
+
+# 3. 显示图表
+print(p_overlap)
