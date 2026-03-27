@@ -211,3 +211,73 @@ p_overlap <- ggplot(plot_df, aes(x = Threshold, y = lncRNA_Count, group = Cancer
 
 # 3. 显示图表
 print(p_overlap)
+
+library(dplyr)
+library(stringr)
+standardize_lncRNA_name <- function(names_vec) {
+  names_vec <- toupper(str_trim(names_vec)) # 去除空格并转大写
+  # 还可以添加更多清洗规则，例如替换连字符等，但目前这两个是最常见的。
+  return(names_vec)
+}
+# EVLncRNAs
+evl_lncs <- EVLncRNAs %>%
+  select(any_of(c("LncRNA name", "LncRNA.name"))) %>% 
+  distinct() %>%
+  setNames("lnc") %>% # 临时统一列名方便操作
+  mutate(lnc = standardize_lncRNA_name(lnc)) %>%
+  filter(!is.na(lnc) & lnc != "") %>%
+  pull(lnc)
+
+# Lnc2cancer
+lnc2c_lncs <- Lnc2cancer %>%
+  select(name) %>% # 选择 lncRNA 名称列
+  distinct() %>%
+  mutate(name = standardize_lncRNA_name(name)) %>%
+  filter(name != "") %>%
+  pull(name)
+
+# LncRNADisease
+LncRNADisease <- LncRNADisease[LncRNADisease$`ncRNA Category` == "LncRNA",]
+lncrnad_lncs <- LncRNADisease %>%
+  select(any_of(c("ncRNA Symbol", "ncRNA.Symbol"))) %>% 
+  distinct() %>%
+  setNames("lnc") %>%
+  mutate(lnc = standardize_lncRNA_name(lnc)) %>%
+  filter(!is.na(lnc) & lnc != "") %>%
+  pull(lnc)
+
+# 你的 RCD_lnc 列表
+your_rcd_lncs <- RCD_lnc %>%
+  select(lncRNA) %>%
+  distinct() %>%
+  mutate(lncRNA = standardize_lncRNA_name(lncRNA)) %>%
+  filter(lncRNA != "") %>%
+  pull(lncRNA)
+
+result_df <- tibble(
+  lncRNA = your_rcd_lncs
+) %>%
+  mutate(In_EVLncRNAs = lncRNA %in% evl_lncs) %>%
+  mutate(In_Lnc2cancer = lncRNA %in% lnc2c_lncs) %>%
+  mutate(In_LncRNADisease = lncRNA %in% lncrnad_lncs)
+
+result_df <- result_df %>%
+  mutate(Confidence_Label = case_when(
+    # 逻辑 1：只要在 Lnc2cancer 中出现过，就是高置信度
+    In_Lnc2cancer == TRUE ~ "High Confidence",
+    
+    # 逻辑 2：不在 Lnc2cancer，但在另外两个数据库中至少出现了一个
+    In_Lnc2cancer == FALSE & (In_EVLncRNAs == TRUE | In_LncRNADisease == TRUE) ~ "Medium Confidence",
+    
+    # 逻辑 3：三个数据库都没出现
+    In_EVLncRNAs == FALSE & In_Lnc2cancer == FALSE & In_LncRNADisease == FALSE ~ "Candidate",
+    
+    # 备用：万一有遗漏的情况（理论上不会）
+    TRUE ~ "Others"
+  ))
+
+# 将结果转换为因子并排序，方便后续绘图（High -> Medium -> Candidate）
+result_df$Confidence_Label <- factor(result_df$Confidence_Label, 
+                                     levels = c("High Confidence", "Medium Confidence", "Candidate"))
+print(table(result_df$Confidence_Label))
+head(result_df)
