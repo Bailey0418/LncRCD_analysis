@@ -1,0 +1,170 @@
+#####1.Disease-Label
+library(dplyr)
+library(stringr)
+standardize_lncRNA_name <- function(names_vec) {
+  names_vec <- toupper(str_trim(names_vec)) # 去除空格并转大写
+  # 还可以添加更多清洗规则，例如替换连字符等，但目前这两个是最常见的。
+  return(names_vec)
+}
+# EVLncRNAs
+evl_lncs <- EVLncRNAs %>%
+  select(any_of(c("LncRNA name", "LncRNA.name"))) %>% 
+  distinct() %>%
+  setNames("lnc") %>% # 临时统一列名方便操作
+  mutate(lnc = standardize_lncRNA_name(lnc)) %>%
+  filter(!is.na(lnc) & lnc != "") %>%
+  pull(lnc)
+
+# Lnc2cancer
+lnc2c_lncs <- Lnc2cancer %>%
+  select(name) %>% # 选择 lncRNA 名称列
+  distinct() %>%
+  mutate(name = standardize_lncRNA_name(name)) %>%
+  filter(name != "") %>%
+  pull(name)
+
+# LncRNADisease
+LncRNADisease <- LncRNADisease[LncRNADisease$`ncRNA Category` == "LncRNA",]
+lncrnad_lncs <- LncRNADisease %>%
+  select(any_of(c("ncRNA Symbol", "ncRNA.Symbol"))) %>% 
+  distinct() %>%
+  setNames("lnc") %>%
+  mutate(lnc = standardize_lncRNA_name(lnc)) %>%
+  filter(!is.na(lnc) & lnc != "") %>%
+  pull(lnc)
+
+# 你的 RCD_lnc 列表
+your_rcd_lncs <- RCD_lnc %>%
+  select(lncRNA) %>%
+  distinct() %>%
+  mutate(lncRNA = standardize_lncRNA_name(lncRNA)) %>%
+  filter(lncRNA != "") %>%
+  pull(lncRNA)
+
+result_df <- tibble(
+  lncRNA = your_rcd_lncs
+) %>%
+  mutate(In_EVLncRNAs = lncRNA %in% evl_lncs) %>%
+  mutate(In_Lnc2cancer = lncRNA %in% lnc2c_lncs) %>%
+  mutate(In_LncRNADisease = lncRNA %in% lncrnad_lncs)
+
+result_df <- result_df %>%
+  mutate(Confidence_Label = case_when(
+    # 逻辑 1：只要在 Lnc2cancer 中出现过，就是高置信度
+    In_Lnc2cancer == TRUE ~ "High Confidence",
+    
+    # 逻辑 2：不在 Lnc2cancer，但在另外两个数据库中至少出现了一个
+    In_Lnc2cancer == FALSE & (In_EVLncRNAs == TRUE | In_LncRNADisease == TRUE) ~ "Medium Confidence",
+    
+    # 逻辑 3：三个数据库都没出现
+    In_EVLncRNAs == FALSE & In_Lnc2cancer == FALSE & In_LncRNADisease == FALSE ~ "Candidate",
+    
+    # 备用：万一有遗漏的情况（理论上不会）
+    TRUE ~ "Others"
+  ))
+
+# 将结果转换为因子并排序，方便后续绘图（High -> Medium -> Candidate）
+result_df$Confidence_Label <- factor(result_df$Confidence_Label, 
+                                     levels = c("High Confidence", "Medium Confidence", "Candidate"))
+print(table(result_df$Confidence_Label))
+head(result_df)
+#####2.LncTard——Label
+library(data.table)
+lnctard <- read.table("D:/Project/03SCI/250710_LncRCD/Computational and Structural Biotechnology Journal/Supplementary/lnctard/lnctard2.0.txt", 
+                      header = TRUE, 
+                      sep = "	", 
+                      fill = TRUE,      # 核心参数：允许行长度不等，空位补 NA
+                      quote = "",       # 核心参数：不对引号进行转义处理
+                      comment.char = "", # 防止把 # 号当成注释
+                      check.names = FALSE)
+table(lnctard$RegulatorType)
+table(lnctard$TargetType)
+lnctard <- lnctard[lnctard$RegulatorType=="lncRNA",]
+
+RCD_lnc <- read.csv("RCD-lnc.csv")
+RCD_lnc_Tar <- lnctard[lnctard$Regulator %in% RCD_lnc$lncRNA,]
+RCD_lnc_Tar_mRNA <- RCD_lnc_Tar[RCD_lnc_Tar$TargetType=="PCG",]
+
+RCD_mRNA <- read.csv("E:/RCD/data/cancer/####RCD-pathway/geneset.csv",header = T)
+library(dplyr)
+rcd_lnc_interaction <- RCD_lnc_Tar_mRNA %>%
+  # 只选择我们需要的列，减少冗余
+  select(Regulator, Target) %>%
+  # 连接两个表
+  inner_join(RCD_mRNA, by = c("Target" = "pcg")) %>%
+  # 重新排列一下列顺序，让结构更清晰
+  select(Regulator, Target, pathway) %>%
+  # 去重（防止源数据中有重复记录）
+  distinct()
+head(rcd_lnc_interaction)
+table(rcd_lnc_interaction$Target)
+write.csv(rcd_lnc_interaction, "LncRNA_RCD_Interaction_List.csv", row.names = FALSE)
+
+#####3.Cis—Label
+library(rtracklayer)
+library(GenomicRanges)
+library(dplyr)
+RCD_lnc <- read.csv("RCD-lnc.csv")
+RCD_mRNA <- read.csv("E:/RCD/data/cancer/####RCD-pathway/geneset.csv",header = T)
+probemap_data <- read.delim("D:/Project/03SCI/250710_LncRCD/Computational and Structural Biotechnology Journal/Supplementary/CIS/gencode.v36.annotation.gtf.gene.probemap", 
+                            header = TRUE, 
+                            sep = "	", 
+                            check.names = FALSE)
+head(probemap_data)
+colnames(probemap_data) <- trimws(colnames(probemap_data))
+genes_anno <- probemap_data %>%
+  dplyr::rename(
+    seqnames = chrom, 
+    gene_name = gene,
+    start = chromStart,
+    end = chromEnd
+  ) %>%
+  # 确保坐标是数值型
+  mutate(
+    start = as.numeric(start), 
+    end = as.numeric(end)
+  ) %>%
+  filter(!is.na(start))
+head(genes_anno)
+
+lnc_coords <- genes_anno %>% 
+  filter(gene_name %in% RCD_lnc$lncRNA) %>%
+  makeGRangesFromDataFrame(keep.extra.columns = TRUE)
+
+pcg_coords <- genes_anno %>% 
+  filter(gene_name %in% RCD_mRNA$pcg) %>%
+  makeGRangesFromDataFrame(keep.extra.columns = TRUE)
+
+nearest_pairs_indices <- nearest(lnc_coords, pcg_coords, ignore.strand = TRUE)
+nearest_pcg_coords <- pcg_coords[nearest_pairs_indices]
+distances <- distance(lnc_coords, nearest_pcg_coords, ignore.strand = TRUE)
+lnc_to_pcg_nearest_dist <- data.frame(
+  lncRNA_gene_name = mcols(lnc_coords)$gene_name,
+  lncRNA_id = mcols(lnc_coords)$id,
+  pcg_gene_name = mcols(nearest_pcg_coords)$gene_name, # 使用 nearest_pcg_coords 的 meta-columns
+  pcg_id = mcols(nearest_pcg_coords)$id,               # 使用 nearest_pcg_coords 的 meta-columns
+  distance = distances
+)
+lnc_to_pcg_nearest_dist <- lnc_to_pcg_nearest_dist %>% filter(!is.na(pcg_gene_name))
+head(lnc_to_pcg_nearest_dist)
+final_res <- lnc_to_pcg_nearest_dist %>%
+  mutate(type = case_when(
+    is.na(distance) ~ "Different_Chr_or_Unknown", # 虽然前面 filter 掉了 NA，这里可以保留以防万一
+    distance == 0 ~ "Overlap/Cis",
+    distance <= 100000 ~ "Cis_Proximal(<100kb)",
+    distance <= 500000 ~ "Cis_Distal(<500kb)",
+    TRUE ~ "Trans"
+  ))
+head(final_res)
+write.csv(final_res, "LncRNA_RCD_CIS_List.csv", row.names = FALSE)
+library(ggplot2)
+
+# 绘制距离分布图（只针对同一染色体上的基因，因为不同染色体距离是 NA）
+ggplot(final_res %>% filter(!is.na(distance)), aes(x = distance/1000)) +
+  geom_histogram(bins = 50, fill = "steelblue", color = "white") +
+  theme_minimal() +
+  labs(title = "Distribution of Distances between lncRNA and nearest PCG",
+       x = "Distance (kb)",
+       y = "Count") +
+  geom_vline(xintercept = 100, linetype="dashed", color = "red") # 100kb 阈值线
+  labs(title = "Zoomed-in View (0-500kb)", x = "Distance (kb)", y = "Count")
