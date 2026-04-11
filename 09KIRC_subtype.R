@@ -131,33 +131,54 @@ p_km <- ggsurvplot(
   ggtheme = theme_bw()
 )
 print(p_km)
-#silhouette 分析
-dist_mat <- dist(t(nmf_mat))
-sil <- silhouette(as.numeric(factor(subtype_df$subtype)), dist_mat)
-summary(sil)
-plot(sil, border = NA, main = "Silhouette plot for NMF subtypes")
-mean_sil <- summary(sil)$avg.width
-mean_sil
-seeds <- c(1, 11, 21, 31, 41)
-cluster_list <- list()
-for (i in seq_along(seeds)) {
-  set.seed(seeds[i])
-  fit_tmp <- nmf(nmf_mat, rank = best_k, method = "brunet", nrun = 100, seed = seeds[i])
-  cl_tmp <- predict(fit_tmp)
-  cluster_list[[i]] <- cl_tmp
+#silhouette分析
+nruns <- c(10, 30, 50, 100, 150, 200, 300)
+fixed_seed <- 1234
+nrun_stability <- data.frame()
+nrun_cluster_list <- list()
+final_groups <- clusters
+for (nr in nruns) {
+  cat("Running NMF with nrun =", nr, "
+")
+  
+  fit_tmp <- nmf(nmf_mat,
+                 rank = best_k,
+                 method = "brunet",
+                 nrun = nr,
+                 seed = fixed_seed)
+  tmp_groups <- predict(fit_tmp)
+  nrun_cluster_list[[paste0("nrun_", nr)]] <- tmp_groups
+  ari_val <- adjustedRandIndex(final_groups, tmp_groups)
+  sample_dist <- dist(t(nmf_mat))
+  sil <- silhouette(as.integer(as.factor(tmp_groups)), sample_dist)
+  mean_sil <- mean(sil[, 3])
+  coph <- cophcor(consensus(fit_tmp))
+  nrun_stability <- rbind(nrun_stability,
+                          data.frame(
+                            nrun = nr,
+                            ARI_vs_final = ari_val,
+                            mean_silhouette = mean_sil,
+                            cophenetic = coph
+                          ))
 }
-names(cluster_list) <- paste0("seed_", seeds)
-ari_mat <- matrix(NA, nrow = length(cluster_list), ncol = length(cluster_list))
-rownames(ari_mat) <- names(cluster_list)
-colnames(ari_mat) <- names(cluster_list)
-for(i in 1:length(cluster_list)){
-  for(j in 1:length(cluster_list)){
-    common <- intersect(names(cluster_list[[i]]), names(cluster_list[[j]]))
-    ari_mat[i,j] <- adjustedRandIndex(cluster_list[[i]][common], cluster_list[[j]][common])
+print(nrun_stability)
+write.csv(nrun_stability, "nrun_stability_analysis.csv", row.names = FALSE)
+
+nrun_names <- names(nrun_cluster_list)
+ari_matrix <- matrix(NA, nrow = length(nrun_names), ncol = length(nrun_names))
+rownames(ari_matrix) <- nrun_names
+colnames(ari_matrix) <- nrun_names
+for (i in 1:length(nrun_names)) {
+  for (j in 1:length(nrun_names)) {
+    ari_matrix[i, j] <- adjustedRandIndex(
+      nrun_cluster_list[[nrun_names[i]]],
+      nrun_cluster_list[[nrun_names[j]]]
+    )
   }
 }
-ari_mat
-pheatmap(ari_mat, display_numbers = TRUE, main = "ARI across different seeds")
+print(ari_matrix)
+write.csv(ari_matrix, "nrun_pairwise_ARI_matrix.csv")
+pheatmap(ari_matrix, display_numbers = TRUE, main = "ARI across different nrun")
 #subsampling
 set.seed(1234)
 n_iter <- 50
