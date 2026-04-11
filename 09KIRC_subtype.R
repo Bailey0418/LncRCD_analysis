@@ -1,75 +1,250 @@
-setwd("D:/Project/03SCI/250710LncRCD修稿/GPB/补充数据/KIRC亚型")
-#####KIRC immune subtype
-lnc <- read.csv("D:/Project/03SCI/250710LncRCD修稿/GPB/补充数据/KIRC预后模型构建/KIRC_单因素COX分析结果.csv")
-data <- read.csv("D:/Project/03SCI/250710LncRCD修稿/GPB/补充数据/KIRC预后模型构建/KIRC_cox_data.csv",row.names = 1)
-expr <- data[,-c(1:3)]
-expr <- t(expr)
-expr <- as.data.frame(expr)
-lnc$gene <- gsub("-", ".", lnc$gene)
-expr <- expr[rownames(expr) %in% lnc$gene,]
+setwd("D:/Project/03SCI/250710_LncRCD/Computational and Structural Biotechnology Journal/Supplementary/KIRC/Subtytpe")
+a <- read.csv("E:/RCD/data/cancer/KIRC/Apoptosis.csv")
+b <- read.csv("E:/RCD/data/cancer/KIRC/Cuproptosis.csv")
+c <- read.csv("E:/RCD/data/cancer/KIRC/Necroptosis.csv")
+d <- read.csv("E:/RCD/data/cancer/KIRC/Pyroptosis.csv")
+e <- rbind(a,b,c,d)
+lnc <- unique(e$lncRNA)
+rm(a,b,c,d,e)
+
+library(data.table)
+library(dplyr)
+library(stringr)
+library(tibble)
+survival <- fread("D:/Project/03SCI/250710_LncRCD/Computational and Structural Biotechnology Journal/Supplementary/KIRC/Prognosis/TCGA-KIRC.survival.tsv.gz", data.table = FALSE)
+fpkm <- read.csv("E:/RCD/data/cancer/KIRC/fpkm/TCGA_KIRC_lncRNA_tum_fpkm.csv", row.names = 1)
+colnames(fpkm) <- gsub("\\.", "-", colnames(fpkm))
+surv2 <- survival %>%
+  transmute(
+    sample = as.character(sample),
+    patient_id = as.character(`_PATIENT`),
+    time = as.numeric(`OS.time`),
+    status = as.numeric(OS)
+  ) %>%
+  filter(!is.na(sample), !is.na(patient_id), !is.na(time), !is.na(status)) %>%
+  filter(time > 0) %>%
+  distinct(patient_id, .keep_all = TRUE)
+exp <- fpkm[row.names(fpkm) %in% lnc,]
 
 library(NMF)
-ranks <- 2:8
-f = "rank.rdata"
-if(!file.exists(f)){
-  result = nmf(expr,ranks,nrun = 150,seed=123)
-  save(result,file = f)
-}
-load(f)
-plot(result)
-
-rank = 4
-result2 <- nmf(expr,rank = rank,nrun = 150)
-index <- extractFeatures(result2,"max") # 能给出选了哪些关键的基因，可以用这些基因再次聚类
-fpkm = expr[unlist(index),]
-fpkm <- na.omit(fpkm)
-result2 <- nmf(fpkm,rank = rank,nrun = 150)
-group <- predict(result2) # 提出亚型
-table(group)
-my_palette <- c("#98d09d","#fbf398","#e77381","#9b8191","#7EABCA")
-annColors <- list(group = setNames(my_palette, unique(group)))
-basismap(dp,
-         cexCol = 1.5,
-         cexRow = 1,
-         annColors = annColors)
-dp = fpkm[,order(group)]
-write.csv(group,"KIRC_group.csv")
-
-#group 生存
 library(survival)
 library(survminer)
-library(tidyverse)
-common_samples <- intersect(rownames(data), names(group))
-data <- data[common_samples, ]
-group <- group[common_samples]
-all(rownames(data) == names(group))
-data$group = group
-data$OS <- as.numeric(data$OS)
-sfit <- survfit(Surv(OS.time, OS) ~ group, data = data)
-ggsurvplot(sfit, data = data, pval = TRUE, palette = my_palette)
-
-#group PCA
-library(Rtsne)
-expr <- t(expr)#矩阵应为样本数*基因数
-tsne_out = Rtsne(expr,perplexity = 30)
-all(rownames(expr) == names(group))
-pdat = data.frame(tsne_out$Y,factor(group))
-colnames(pdat) = c("Y1","Y2","group")
-head(pdat)
 library(ggplot2)
-library(paletteer)
-ggplot(pdat, aes(x = Y1, y = Y2, fill = group, color = group)) +
-  geom_point(shape = 21, color = "black", size = 3) +  # 点使用黑边，填充颜色来自 group
-  stat_ellipse(geom = "polygon", alpha = 0.3, linetype = 2) +  # 椭圆透明度
-  scale_color_manual(values = my_palette) +  # 线条颜色
-  scale_fill_manual(values = my_palette) +   # 填充颜色
-  theme_classic() +
-  theme(legend.position = "top")
+library(pheatmap)
+library(dplyr)
+library(cluster)
+library(mclust)
+library(factoextra)
+exp <- as.data.frame(exp)
+exp <- as.matrix(exp)
+exp_sample <- substr(colnames(exp), 1, 15)
+colnames(exp) <- exp_sample
+tumor_idx <- substr(colnames(exp), 14, 15) == "01"
+exp_tumor <- exp[, tumor_idx, drop = FALSE]
+dim(exp_tumor)
+head(colnames(exp_tumor))
 
+surv2 <- as.data.frame(surv2)
+surv2$sample15 <- substr(surv2$sample, 1, 15)
+surv2$patient15 <- substr(surv2$patient_id, 1, 12)
+
+exp_patient <- substr(colnames(exp_tumor), 1, 12)
+colnames(exp_tumor) <- exp_patient
+exp_tumor <- exp_tumor[, !duplicated(colnames(exp_tumor)), drop = FALSE]
+
+surv_use <- surv2 %>%
+  mutate(patient12 = substr(patient_id, 1, 12)) %>%
+  distinct(patient12, .keep_all = TRUE)
+common_patients <- intersect(colnames(exp_tumor), surv_use$patient12)
+length(common_patients)
+exp_use <- exp_tumor[, common_patients, drop = FALSE]
+surv_use2 <- surv_use %>%
+  filter(patient12 %in% common_patients) %>%
+  arrange(match(patient12, colnames(exp_use)))
+all(colnames(exp_use) == surv_use2$patient12)
+#单因素COX
+cox_results <- lapply(rownames(exp_use), function(gene){
+  x <- as.numeric(exp_use[gene, ])
+  dat <- data.frame(
+    time = surv_use2$time,
+    status = surv_use2$status,
+    expr = x
+  )
+  fit <- coxph(Surv(time, status) ~ expr, data = dat)
+  s <- summary(fit)
+  data.frame(
+    gene = gene,
+    HR = s$coefficients[1, "exp(coef)"],
+    coef = s$coefficients[1, "coef"],
+    pvalue = s$coefficients[1, "Pr(>|z|)"]
+  )
+})
+
+cox_df <- do.call(rbind, cox_results)
+cox_df <- cox_df[order(cox_df$pvalue), ]
+head(cox_df)
+sig_genes <- cox_df$gene[cox_df$pvalue < 0.05]
+length(sig_genes)
+write.csv(sig_genes,"cox_sig_genes.csv")
+#NMF参数确定
+nmf_mat <- exp_use[sig_genes, , drop = FALSE]
+dim(nmf_mat)
+set.seed(1234)
+rank_range <- 2:8
+nmf_est <- nmf(nmf_mat, rank = rank_range, method = "brunet", nrun = 150, seed = 1234)
+pdf("NMF_rank_selection.pdf", width = 8, height = 8)
+plot(nmf_est)
+dev.off()
+#NMF
+best_k <- 3
+set.seed(1234)
+nmf_fit <- nmf(nmf_mat, rank = best_k, method = "brunet", nrun = 200, seed = 123456)
+nmf_fit
+clusters <- predict(nmf_fit)
+table(clusters)
+subtype_df <- data.frame(
+  patient_id = names(clusters),
+  subtype = paste0("C", clusters),
+  stringsAsFactors = FALSE)
+head(subtype_df)
+
+feature_idx <- extractFeatures(nmf_fit, method = "max")
+feature_genes <- unique(rownames(nmf_mat)[unlist(feature_idx)])
+
+subtype_surv <- surv_use2 %>%
+  mutate(patient_id = patient12) %>%
+  inner_join(subtype_df, by = "patient_id")
+head(subtype_surv)
+table(subtype_surv$subtype)
+#consensus matrix热图
+cons_mat <- consensusmap(nmf_fit, annCol = data.frame(Subtype = factor(clusters)),
+                         main = "Consensus map", labCol = NA, labRow = NA)
+#KM
+fit_km <- survfit(Surv(time, status) ~ subtype, data = subtype_surv)
+p_km <- ggsurvplot(
+  fit_km,
+  data = subtype_surv,
+  pval = TRUE,
+  risk.table = TRUE,
+  conf.int = FALSE,
+  palette = c("#E64B35", "#4DBBD5", "#00A087", "#3C5488"),
+  ggtheme = theme_bw()
+)
+print(p_km)
+#silhouette 分析
+dist_mat <- dist(t(nmf_mat))
+sil <- silhouette(as.numeric(factor(subtype_df$subtype)), dist_mat)
+summary(sil)
+plot(sil, border = NA, main = "Silhouette plot for NMF subtypes")
+mean_sil <- summary(sil)$avg.width
+mean_sil
+seeds <- c(1, 11, 21, 31, 41)
+cluster_list <- list()
+for (i in seq_along(seeds)) {
+  set.seed(seeds[i])
+  fit_tmp <- nmf(nmf_mat, rank = best_k, method = "brunet", nrun = 100, seed = seeds[i])
+  cl_tmp <- predict(fit_tmp)
+  cluster_list[[i]] <- cl_tmp
+}
+names(cluster_list) <- paste0("seed_", seeds)
+ari_mat <- matrix(NA, nrow = length(cluster_list), ncol = length(cluster_list))
+rownames(ari_mat) <- names(cluster_list)
+colnames(ari_mat) <- names(cluster_list)
+for(i in 1:length(cluster_list)){
+  for(j in 1:length(cluster_list)){
+    common <- intersect(names(cluster_list[[i]]), names(cluster_list[[j]]))
+    ari_mat[i,j] <- adjustedRandIndex(cluster_list[[i]][common], cluster_list[[j]][common])
+  }
+}
+ari_mat
+pheatmap(ari_mat, display_numbers = TRUE, main = "ARI across different seeds")
+#subsampling
+set.seed(1234)
+n_iter <- 50
+subsample_ratio <- 0.8
+subsample_results <- list()
+all_patients <- colnames(nmf_mat)
+for(i in 1:n_iter){
+  sub_patients <- sample(all_patients, size = floor(length(all_patients) * subsample_ratio))
+  sub_mat <- nmf_mat[, sub_patients, drop = FALSE]
+  
+  fit_sub <- nmf(sub_mat, rank = best_k, method = "brunet", nrun = 50, seed = i + 100)
+  cl_sub <- predict(fit_sub)
+  
+  subsample_results[[i]] <- cl_sub
+}
+orig_cluster <- clusters
+ari_sub <- c()
+for(i in 1:length(subsample_results)){
+  common <- intersect(names(orig_cluster), names(subsample_results[[i]]))
+  ari_sub[i] <- adjustedRandIndex(orig_cluster[common], subsample_results[[i]][common])
+}
+summary(ari_sub)
+ggplot(data.frame(ARI = ari_sub), aes(x = ARI)) +
+  geom_histogram(bins = 15, fill = "#4DBBD5", color = "black") +
+  theme_bw() +
+  labs(title = "Subsampling robustness of NMF clustering")
+#层次聚类
+hc <- hclust(dist(t(nmf_mat)), method = "ward.D2")
+hc_cluster <- cutree(hc, k = best_k)
+table(hc_cluster)
+adjustedRandIndex(clusters, hc_cluster)
+plot(hc, labels = FALSE, main = "Hierarchical clustering")
+rect.hclust(hc, k = best_k, border = 2:5)
+#k-means
+set.seed(1234)
+km <- kmeans(t(nmf_mat), centers = best_k, nstart = 50)
+km_cluster <- km$cluster
+table(km_cluster)
+adjustedRandIndex(clusters, km_cluster)
+compare_df <- data.frame(
+  patient_id = names(clusters),
+  NMF = as.character(clusters[names(clusters)]),
+  HC = as.character(hc_cluster[names(clusters)]),
+  Kmeans = as.character(km_cluster[names(clusters)])
+)
+write.csv(compare_df, "Subtype_comparison_methods.csv", row.names = FALSE)
+
+final_subtype <- subtype_surv %>%
+  select(patient_id, sample, time, status, subtype)
+write.csv(final_subtype, "KIRC_NMF_subtypes.csv", row.names = FALSE)
+write.csv(cox_df, "Univariate_cox_lncRNAs_for_NMF.csv", row.names = FALSE)
+write.csv(data.frame(selected_genes = sig_genes), "Selected_lncRNAs_for_NMF.csv", row.names = FALSE)
+#Sankey图
+library(ggalluvial)
+my_cols <- c("NMF_1" = "#E64B35","NMF_2" = "#4DBBD5","NMF_3" = "#00A087","NMF_4" = "#3C5488")
+plot_df <- compare_df %>%
+  mutate(
+    NMF = paste0("NMF_", NMF),
+    HC = paste0("HC_", HC),
+    Kmeans = paste0("Kmeans_", Kmeans)
+  )
+freq_df <- dplyr::count(plot_df, NMF, HC, Kmeans)
+p2 <- ggplot(freq_df,
+             aes(axis1 = NMF, axis2 = HC, axis3 = Kmeans, y = n)) +
+  geom_alluvium(aes(fill = NMF), width = 0.2, alpha = 0.85) +
+  geom_stratum(width = 0.2, fill = "grey95", color = "black") +
+  geom_text(stat = "stratum", aes(label = after_stat(stratum)), size = 4) +
+  scale_x_discrete(limits = c("NMF", "HC", "Kmeans"), expand = c(.08, .08)) +
+  scale_fill_manual(values = my_cols) +
+  labs(
+    title = "Sankey plot of clustering concordance",
+    x = NULL,
+    y = "Number of samples",
+    fill = "NMF subtype"
+  ) +
+  theme_classic() +
+  theme(
+    axis.text.x = element_text(size = 12, face = "bold"),
+    axis.title.y = element_text(size = 11),
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
+    legend.position = "right"
+  )
+print(p)
 #marker lncRNA热图
 library(pheatmap)
 library(ComplexHeatmap)
-sorted_samples <- names(sort(group))
+sorted_samples <- names(sort(clusters))
 fpkm_sorted <- fpkm[, sorted_samples]      # 表达矩阵按样本排序
 group_sorted <- group[sorted_samples]      # 分组向量对应排序后的样本
 fpkm_num <- apply(fpkm_sorted, 2, as.numeric)
@@ -89,11 +264,38 @@ pheatmap(fpkm_num,
          annotation_col = annotation_col,
          annotation_colors = ann_colors,
          annotation_legend = TRUE)
-
-#计算肿瘤纯度与免疫分数
+# 特征基因表达热图
+fpkm <- nmf_mat[feature_genes, , drop = FALSE]
+group <- clusters
+group <- group[colnames(fpkm)] 
+sorted_samples <- names(sort(group))
+fpkm_sorted <- fpkm[, sorted_samples, drop = FALSE]
+group_sorted <- group[sorted_samples]
+fpkm_num <- as.matrix(fpkm_sorted)
+storage.mode(fpkm_num) <- "numeric"
+annotation_col <- data.frame(Group = factor(paste0("C", group_sorted)))
+rownames(annotation_col) <- colnames(fpkm_num)
+group_levels <- levels(annotation_col$Group)
+my_palette <- c("#E64B35", "#4DBBD5", "#00A087")
+ann_colors <- list(Group = setNames(my_palette[seq_along(group_levels)], group_levels))
+pheatmap(fpkm_num,
+         cluster_rows = TRUE,
+         cluster_cols = FALSE,
+         scale = "row",
+         color = colorRampPalette(c("navy", "white", "firebrick3"))(100),
+         show_colnames = FALSE,
+         show_rownames = TRUE,
+         border_color = NA,
+         annotation_col = annotation_col,
+         annotation_colors = ann_colors,
+         annotation_legend = TRUE)
+#estimate分析
 KIRC_count <- read.csv("E:/RCD/data/cancer/KIRC/count/TCGA_KIRC_pcg_tum_count.csv",row.names = 1)
-
-library(estimate)  #定义ESTIMATE包
+colnames(KIRC_count) <- gsub("\\.", "-", colnames(KIRC_count))
+KIRC_count_cowmanes <- substr(colnames(KIRC_count), 1, 12)
+colnames(KIRC_count) <- KIRC_count_cowmanes
+KIRC_count <- KIRC_count[,colnames(nmf_mat)]
+library(estimate)
 estimate <- function(pcg_count,pro){
   input.f=paste0(pro,'_estimate_input.txt')
   output.f=paste0(pro,'_estimate_gene.gct')
@@ -116,90 +318,55 @@ scores=estimate(KIRC_count,pro)
 scores <- as.data.frame(scores)
 scores$TumorPurity = cos(0.6049872018+0.0001467884 * scores[,3])
 write.csv(scores,"KIRC_immunescores.csv")
-
-#画箱线图
-group <- read.csv("KIRC_group.csv",row.names = 1)
-rownames(group) <- gsub("-", ".", rownames(group))
-library(stringr)
-sample_names <- str_sub(rownames(scores), 1, 12)
-keep_index <- !duplicated(sample_names)
-scores <- scores[keep_index, ]
-rownames(scores) <- sample_names[keep_index]
-scores1 <- scores[rownames(group),]
-identical(rownames(group), rownames(scores1))
-data <- cbind(group,scores1)
+#箱线图
+rownames(scores) <- gsub("\\.", "-", rownames(scores))
+identical(names(group), rownames(scores))
+data <- cbind(group,scores)
 library(ggplot2)
 library(ggpubr)
-p = ggboxplot(data,x = "x",y = "StromalScore",color = "x",add = "jitter")+#TumorPurity,StromalScore,ImmuneScore,ESTIMATEScore
-  scale_color_manual(values = c("#98d09d","#fbf398","#e77381","#9b8191","#7EABCA"))+
+p = ggboxplot(data,x = "group",y = "ESTIMATEScore",color = "group",add = "jitter")+#TumorPurity,StromalScore,ImmuneScore,ESTIMATEScore
+  scale_color_manual(values = c("#E64B35", "#4DBBD5", "#00A087"))+
   stat_compare_means()#多组差异
 p
-
-#Cibersort计算免疫细胞
-setwd("D:/Project/03SCI/250710LncRCD修稿/GPB/补充数据/KIRC亚型")
-library(ggplot2)
+##Cibersort分析
 library(reshape2)
-library(ggpubr)
-library(dplyr)
-group <- read.csv("KIRC_group.csv",row.names = 1)
-fpkm <- read.csv("E:/RCD/data/cancer/KIRC/fpkm/TCGA_KIRC_pcg_tum_fpkm.csv",row.names = 1)
-rownames(group) <- gsub("-", ".", rownames(group))
+pcg_fpkm <- read.csv("E:/RCD/data/cancer/KIRC/fpkm/TCGA_KIRC_pcg_tum_fpkm.csv",row.names = 1)
+colnames(pcg_fpkm) <- gsub("\\.", "-", colnames(pcg_fpkm))
+KIRC_pcg_fpkm_colmanes <- substr(colnames(pcg_fpkm), 1, 12)
+colnames(pcg_fpkm) <- KIRC_pcg_fpkm_colmanes
+pcg_fpkm <- pcg_fpkm[,colnames(nmf_mat)]
 library(stringr)
-fpkm <- as.data.frame(t(fpkm))
-sample_names <- str_sub(rownames(fpkm), 1, 12)
-keep_index <- !duplicated(sample_names)
-fpkm <- fpkm[keep_index, ]
-rownames(fpkm) <- sample_names[keep_index]
-fpkm = 2^fpkm-1#要求输入未log处理数据
-fpkm <- fpkm[!duplicated(rownames(fpkm)),]
-fpkm <- as.data.frame(t(fpkm))
-fpkm <- cbind(RowName = rownames(fpkm), fpkm)
-rownames(fpkm) <- NULL
-colnames(fpkm)[1] <- "Gene Symbol"
-head(fpkm)
-write.csv(fpkm,"cibersort_data.csv",row.names = T)
-write.table(fpkm, file = "cibersort_data.txt", sep = "\t", row.names = F, col.names = TRUE, quote = FALSE)
+pcg_fpkm = 2^pcg_fpkm-1#要求输入未log处理数据
+pcg_fpkm <- cbind(RowName = rownames(pcg_fpkm), pcg_fpkm)
+rownames(pcg_fpkm) <- NULL
+colnames(pcg_fpkm)[1] <- "Gene Symbol"
+head(pcg_fpkm)
+write.table(pcg_fpkm, file = "cibersort_data.txt", sep = "\t", row.names = F, col.names = TRUE, quote = FALSE)
 
-setwd("C:/Users/Dell/Desktop/data/subtype(2)")
 source('Cibersort.R')
 result <- CIBERSORT('LM22.txt','cibersort_data.txt', perm = 1000, QN = T)
 result <- read.table("CIBERSORT-Results.txt",header = T,sep="\t",row.names = 1)
-
-library(dplyr)
-library(tibble)
 library(tidyr)
-library(ggplot2)
-library(ggpubr)
 library(ggsci)
-library(reshape2)
-b <- read.csv("KIRC_group.csv",row.names = 1)
-rownames(b) <- gsub("-", ".", rownames(b))
-a <- result[,1:22]
-identical(rownames(a),rownames(b))#查看行名是否一致
-b <- b[rownames(a), ]
-rownames(a) <- substr(rownames(a), 1, 12)
-rownames(b) <- substr(rownames(b), 1, 12)
-sum(rownames(a) %in% rownames(b))
-common <- intersect(rownames(a), rownames(b))
-a <- a[common, ]
-b <- b[common, , drop = FALSE]
-identical(rownames(a), rownames(b))
-
-a$group <- b$x
-a <- a %>% rownames_to_column("sample")
-library(ggsci)
-library(tidyr)
-library(ggpubr)
-b <- gather(a,key=CIBERSORT,value = Proportion,-c(group,sample))
-b$group <- as.factor(b$group)
-pdf("cibersort.pdf",width = 10,height = 6)
-ggboxplot(b, 
+ciber <- result[,1:22]
+identical(rownames(ciber),names(group))#查看行名是否一致
+ciber$group <- group
+ciber <- ciber %>% rownames_to_column("sample")
+ciber$group <- factor(paste0("C", group[match(ciber$sample, names(group))]))
+ciber_data <- ciber %>%
+  pivot_longer(
+    cols = -c(sample, group),
+    names_to = "CIBERSORT",
+    values_to = "Proportion"
+  )
+group_levels <- levels(ciber_data$group)
+ggboxplot(ciber_data, 
           x = "CIBERSORT", 
           y = "Proportion",
           fill = "group") +
-  scale_fill_manual(values = c("#98d09d","#fbf398","#e77381","#9b8191","#7EABCA")) +
+  scale_fill_manual(values = c("#E64B35", "#4DBBD5", "#00A087")) +
   stat_compare_means(aes(group = group),
-                     method = "wilcox.test",
+                     method = "kruskal.test",
                      label = "p.signif",
                      symnum.args = list(
                        cutpoints = c(0, 0.001, 0.01, 0.05, 0.1, 1),
@@ -207,30 +374,14 @@ ggboxplot(b,
   ) +
   theme(text = element_text(size = 10),
         axis.text.x = element_text(angle = 45, hjust = 1))
-dev.off()
-
-#免疫细胞比例与marker基因的相关性
-genes <- c("RP5-1091N2.9","RP11-291B21.2","RP11-327F22.2","LINC01260","RP11-10J5.1","LINC00944","CTD-2023M8.1","USP30.AS1","AC079466.1",
-           "RP4-764O22.1","LINC01428","RP11-807H17.1")
-a <- read.table("CIBERSORT-Results.txt",sep = "\t",row.names = 1,check.names = F,header = T)
-a <- a[,1:22]
-expr <- read.csv("E:/RCD/data/cancer/KIRC/fpkm/TCGA_KIRC_lncRNA_tum_fpkm.csv",row.names =1)
-genes_expr <- as.data.frame(t(expr[rownames(expr) %in% genes,]))
-genes_expr <- genes_expr[rownames(a), ]
-rownames(a) <- substr(rownames(a), 1, 12)
-rownames(genes_expr) <- substr(rownames(genes_expr), 1, 12)
-sum(rownames(a) %in% rownames(genes_expr))
-common <- intersect(rownames(a), rownames(genes_expr))
-a <- a[common, ]
-genes_expr <- genes_expr[common, , drop = FALSE]
-identical(rownames(a),rownames(genes_expr))
-
+##免疫细胞比例与marker基因的相关性
+genes <- c("RP5-1172A22.1", "RP11-807H17.1", "RP4-764O22.1", "LINC01428", "USP30-AS1", "AC079466.1")
+result <- read.table("CIBERSORT-Results.txt",header = T,sep="\t",row.names = 1)
+ciber <- result[,1:22]
+genes_expr <- as.data.frame(t(fpkm))
+identical(rownames(ciber),rownames(genes_expr))
 library(linkET)
-library(tidyr)
-library(tibble)
-library(dplyr)
 cor_res <- correlate(genes_expr, a ,method = "spearman")
-
 df_r <- cor_res$r %>%
   as.data.frame() %>%
   rownames_to_column(var = "gene") %>%
@@ -264,8 +415,6 @@ gene_dist <- dist(df_matrix)
 gene_clust <- hclust(gene_dist)# 使用层次聚类
 df_filtered$gene <- factor(df_filtered$gene, levels = gene_clust$labels[gene_clust$order])# 对 gene 进行聚类后的排序
 
-library(ggplot2)
-pdf("cibersort_cor_FDR.pdf",width = 15,height = 8)
 ggplot(df_filtered, aes(cell_type, gene)) +
   geom_tile(aes(fill = correlation)) +
   geom_text(aes(label = stars), color = "black", size = 4) +
@@ -279,271 +428,29 @@ ggplot(df_filtered, aes(cell_type, gene)) +
         axis.text.y = element_text(size = 8, color = "black"),
         axis.ticks.y = element_blank(),
         panel.background = element_blank())
-dev.off()
-
+#亚型比较
 library(readxl)
 data <- read_excel("mmc2.xlsx")
 table(data$`TCGA Study`)
 KIRC <- data[data$`TCGA Study` == "KIRC",]
 write.csv(KIRC,"KIRC_mmc2.csv")
 
-data <- read.csv("KIRC_mmc2.csv",row.names = 1)
-group <- read.csv("KIRC_group.csv")
-sample <- intersect(data$TCGA.Participant.Barcode,group$X)
-data1 <- data[data$TCGA.Participant.Barcode %in% sample,]
-group1 <- group[group$X %in% sample,]
-library(dplyr)
-norm_id <- function(x){
-  x <- gsub("\\.", "-", x)
-  substr(x, 1, 12)
-}
-group1$sample <- norm_id(group1$X)
-data1$sample  <- norm_id(data1$TCGA.Participant.Barcode)
-# 合并标签（只保留两方都有的样本）
-df <- group1 %>%
-  inner_join(data1, by = "sample") %>%
-  dplyr::select(sample, my_subtype = x, immune_subtype = Immune.Subtype, tcga_subtype = TCGA.Subtype)
+sample <- intersect(KIRC$`TCGA Participant Barcode`, names(group))
+KIRC1 <- KIRC[KIRC$`TCGA Participant Barcode` %in% sample,]
+group1 <- group[sample]
+group1_df <- data.frame(
+  sample = names(group1),
+  x = paste0("C", as.character(group1)),
+  stringsAsFactors = FALSE)
+KIRC1$sample  <- KIRC1$`TCGA Participant Barcode`
+df <- group1_df %>%
+  inner_join(KIRC1, by = "sample") %>%
+  dplyr::select(sample, my_subtype = x, immune_subtype = `Immune Subtype`)
 head(df)
 library(vcd)
 library(mclust)
 tab_mmc2  <- table(df$my_subtype, df$immune_subtype)
-tab_tcga  <- table(df$my_subtype, df$tcga_subtype)
 # 卡方 + Cramer's V
 chisq.test(tab_mmc2)
 assocstats(tab_mmc2)$cramer
-
-chisq.test(tab_tcga)
-assocstats(tab_tcga)$cramer
-
 adjustedRandIndex(df$my_subtype, df$immune_subtype)
-adjustedRandIndex(df$my_subtype, df$tcga_subtype)
-
-library(ggalluvial)
-library(ggplot2)
-library(grid)
-if (!exists("gg_par")) gg_par <- grid::gpar
-df$my_subtype <- factor(df$my_subtype, levels = sort(unique(df$my_subtype)))
-my_colors <- c("#98d09d","#fbf398","#e77381","#9b8191")
-### ---------------- Sankey 1: My → MMC2 ----------------
-df_mmc2 <- df %>% 
-  filter(!is.na(immune_subtype)) %>%  # 去除 NA
-  count(my_subtype, immune_subtype)   # 统计频数
-
-pdf("Sankey_my_vs_mmc2_COUNT.pdf", width = 6, height = 4)
-ggplot(df_mmc2,
-       aes(axis1 = my_subtype, axis2 = immune_subtype, y = n)) +
-  geom_alluvium(aes(fill = my_subtype), width = 1/8, alpha = 0.9) +
-  geom_stratum(width = 1/8, color = "grey30") +
-  geom_label(stat = "stratum",
-             aes(label = paste0(after_stat(stratum), " (n=", after_stat(count), ")")),
-             size = 4, fill="white") +
-  scale_fill_manual(values = my_colors) +
-  scale_x_discrete(limits = c("My Subtype", "MMC2 Subtype")) +
-  ylab("Sample Count") + xlab("") +
-  theme_minimal() +
-  theme(
-    plot.title = element_text(hjust = 0.5, size=13, face="bold"),
-    axis.text.x = element_text(color="black", size=11),
-    axis.text.y = element_text(size=10),
-    panel.grid = element_blank()
-  )
-dev.off()
-### ---------------- Sankey 2: My → TCGA ----------------
-df_tcga <- df %>%
-  filter(!is.na(tcga_subtype)) %>%
-  count(my_subtype, tcga_subtype)
-
-pdf("Sankey_my_vs_TCGA_COUNT.pdf", width = 6, height = 4)
-ggplot(df_tcga,
-       aes(axis1 = my_subtype, axis2 = tcga_subtype, y = n)) +
-  geom_alluvium(aes(fill = my_subtype), width = 1/8, alpha = 0.9) +
-  geom_stratum(width = 1/8, color = "grey30") +
-  geom_label(stat = "stratum",
-             aes(label = paste0(after_stat(stratum), " (n=", after_stat(count), ")")),
-             size = 4, fill="white") +
-  scale_fill_manual(values = my_colors) +
-  scale_x_discrete(limits = c("My Subtype", "TCGA Subtype")) +
-  ylab("Sample Count") + xlab("") +
-  ggtitle("Sankey: My subtype → TCGA subtype") +
-  theme_minimal() +
-  theme(
-    plot.title = element_text(hjust = 0.5, size=13, face="bold"),
-    axis.text.x = element_text(color="black", size=11),
-    axis.text.y = element_text(size=10),
-    panel.grid = element_blank()
-  )
-dev.off()
-######分组的差异表达
-setwd("D:/Project/03SCI/250710LncRCD修稿/GPB/补充数据/KIRC亚型/DEGs_enrich")
-count <- read.csv("E:/RCD/data/cancer/KIRC/count/TCGA_KIRC_pcg_count.csv",row.names = 1)
-count <- as.data.frame(sapply(count, as.numeric))
-rownames(count) <- rownames(read.csv("E:/RCD/data/cancer/KIRC/count/TCGA_KIRC_pcg_count.csv", row.names = 1))
-count = 2^count-1
-count <- round(count)
-group <- read.csv("D:/Project/03SCI/250710LncRCD修稿/GPB/补充数据/KIRC亚型/Immune/KIRC_group.csv")
-group1 <- group[which(group$x=="1"),]
-group2 <- group[which(group$x=="2"),]
-group3 <- group[which(group$x=="3"),]
-group4 <- group[which(group$x=="4"),]
-library(DESeq2)
-match_samples <- function(sample_names, all_colnames) {
-  matched <- sapply(sample_names, function(s) {
-    s_clean <- gsub("-", ".", s)  # 把 - 替换成 .
-    matched_cols <- grep(s_clean, all_colnames, value = TRUE)
-    if (length(matched_cols) > 0) matched_cols[1] else NA
-  })
-  matched <- matched[!is.na(matched)]
-  return(matched)
-}
-group1_samples <- match_samples(group1$X, colnames(count))
-group2_samples <- match_samples(group2$X, colnames(count))
-group3_samples <- match_samples(group3$X, colnames(count))
-group4_samples <- match_samples(group4$X, colnames(count))
-tumor_samples_all <- unique(c(group1_samples, group2_samples, group3_samples, group4_samples))
-normal_samples <- setdiff(colnames(count), tumor_samples_all)
-
-group_list <- list(group1 = group1_samples, group2 = group2_samples,
-                   group3 = group3_samples, group4 = group4_samples)
-
-for (g in names(group_list)) {
-  tumor <- group_list[[g]]
-  sub_count <- count[, c(tumor, normal_samples)]
-  
-  condition <- factor(c(rep("tumor", length(tumor)), rep("normal", length(normal_samples))))
-  colData <- data.frame(condition = condition, row.names = colnames(sub_count))
-  
-  dds <- DESeqDataSetFromMatrix(countData = sub_count, colData = colData, design = ~ condition)
-  dds <- DESeq(dds)
-  res <- results(dds)
-  
-  sig <- res[which(res$padj < 0.05 & abs(res$log2FoldChange) > 2), ]
-  
-  write.csv(as.data.frame(sig), file = paste0("DEG_", g, "_vs_normal.csv"))
-  cat("✅ 完成:", g, "\n")
-}
-###分组的富集结果
-library(clusterProfiler)
-library(org.Hs.eg.db)
-library(dplyr)
-library(enrichplot)
-library(ggplot2)
-deg_path <- "D:/Project/03SCI/250710LncRCD修稿/GPB/补充数据/KIRC亚型/DEGs_enrich/"
-deg_files <- list.files(deg_path, pattern = "DEG_.*_vs_normal\\.csv$", full.names = TRUE)
-
-for (file in deg_files) {
-  
-  # 读取差异基因
-  gene <- read.csv(file)
-  gene <- gene[abs(gene$log2FoldChange) > 2 & gene$padj < 0.05, ]
-  gene_symbols <- gene$X
-  
-  if (length(gene_symbols) == 0) {
-    cat("⚠️ 无显著差异基因:", file, "\n")
-    next
-  }
-  
-  prefix <- sub("DEG_|_vs_normal\\.csv", "", basename(file))
-  
-  # ---------------- GO 富集 ----------------
-  ego <- enrichGO(
-    gene = gene_symbols,
-    OrgDb = org.Hs.eg.db,
-    keyType = "SYMBOL",
-    ont = "ALL",
-    pvalueCutoff = 0.05,
-    qvalueCutoff = 0.05
-  )
-  
-  ego_sig <- ego@result %>% filter( pvalue < 0.05)
-  
-  if (nrow(ego_sig) > 0) {
-    write.csv(ego_sig, paste0("GO_", prefix, "_enrichment.csv"), row.names = FALSE)
-    
-    pdf(paste0("GO_dotplot_", prefix, ".pdf"))
-    print(dotplot(ego, showCategory = 20, title = paste0("GO Enrichment - ", prefix)))
-    dev.off()
-  }
-  
-  # ---------------- KEGG 富集 ----------------
-  gene_KEGG <- bitr(gene_symbols, fromType = "SYMBOL", toType = "ENTREZID",
-                    OrgDb = org.Hs.eg.db, drop = TRUE)
-  
-  if (nrow(gene_KEGG) == 0) {
-    cat("⚠️ 无 KEGG ENTREZID:", prefix, "\n")
-    next
-  }
-  
-  ekegg <- enrichKEGG(
-    gene = gene_KEGG$ENTREZID,
-    organism = "hsa",
-    pvalueCutoff = 0.05,
-    qvalueCutoff = 0.05,
-    use_internal_data = TRUE
-  )
-  
-  if (!is.null(ekegg) && nrow(ekegg@result) > 0) {
-    
-    # 使用后缀避免重名，确保 mutate 成功
-    kegg_category <- kegg_category %>% mutate(id = paste0("hsa", id))
-    KEGG_sig <- ekegg@result %>%
-      dplyr::left_join(
-        kegg_category %>% dplyr::select(id, name, category, subcategory),
-        by = c("ID" = "id"),
-        suffix = c("", "_cat")  # 避免重名
-      ) %>%
-      dplyr::mutate(
-        Description = ifelse(!is.na(name) & name != "", name, Description),
-        category = ifelse(!is.na(category_cat) & category_cat != "", category_cat, NA_character_),
-        subcategory = ifelse(!is.na(subcategory_cat) & subcategory_cat != "", subcategory_cat, NA_character_)
-      ) %>%
-      dplyr::select(-name, -category_cat, -subcategory_cat) #%>%
-      #dplyr::filter(!is.na(p.adjust) & p.adjust < 0.05)
-    
-    write.csv(KEGG_sig, paste0("KEGG_", prefix, "_enrichment.csv"), row.names = FALSE)
-    
-    pdf(paste0("KEGG_dotplot_", prefix, ".pdf"))
-    print(dotplot(ekegg, showCategory = 20, title = paste0("KEGG Enrichment - ", prefix)))
-    dev.off()
-  }
-  
-  cat("✅ 完成 GO + KEGG 富集:", prefix, "\n\n")
-}
-
-###功能韦恩图
-library(VennDiagram)
-group1 <- read.csv("GO_group1_vs_normal.csv_enrichment.csv")
-group1 <- group1[,3]
-group2 <- read.csv("GO_group2_vs_normal.csv_enrichment.csv")
-group2 <- group2[,3]
-group3 <- read.csv("GO_group3_vs_normal.csv_enrichment.csv")
-group3 <- group3[,3]
-group4 <- read.csv("GO_group4_vs_normal.csv_enrichment.csv")
-group4 <- group4[,3]
-
-veen1 <- venn.diagram(x=list(group1,group2,group3,group4),
-                      scaled = F, # 根据比例显示大小
-                      alpha= 0.5, #透明度
-                      lwd=1,lty=1,col=c("#98d09d","#fbf398","#e77381","#9b8191"), #圆圈线条粗细、形状、颜色；1 实线, 2 虚线, blank无线条
-                      label.col ='black' , # 数字颜色abel.col=c('#FFFFCC','#CCFFFF',......)根据不同颜色显示数值颜色
-                      cex = 2, # 数字大小
-                      fontface = "bold",  # 字体粗细；加粗bold 
-                      fill=c("#98d09d","#fbf398","#e77381","#9b8191"), # 填充色 配色https://www.58pic.com/
-                      category.names = c("group1", "group2","group3","group4") , #标签名
-                      cat.dist = c(0.2, 0.2, 0.1, 0.1), # 标签距离圆圈的远近
-                      cat.pos = c(-20, 20, -20, 20), # 标签相对于圆圈的角度cat.pos = c(-10, 10, 135)
-                      cat.cex = 2, #标签字体大小
-                      cat.fontface = "bold",  # 标签字体加粗
-                      cat.col=c("#98d09d","#fbf398","#e77381","#9b8191"),   #cat.col=c('#FFFFCC','#CCFFFF',.....)根据相应颜色改变标签颜色
-                      cat.default.pos = "outer",  # 标签位置, outer内;text 外
-                      filename=NULL
-)
-pdf('GO_venn.pdf', width = 10, height = 10)
-grid.draw(veen1)
-dev.off()
-
-df_inter <- get.venn.partitions(list(group1,group2,group3,group4))
-for (i in 1:nrow(df_inter)) df_inter[i,'values'] <- paste(df_inter[[i,'..values..']], collapse = ', ')
-df_inter[-c(5, 6)]
-df_inter <- df_inter[,-6]
-write.csv(df_inter,"GO_venn.csv")
-
