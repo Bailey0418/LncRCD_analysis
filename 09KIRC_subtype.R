@@ -475,3 +475,46 @@ tab_mmc2  <- table(df$my_subtype, df$immune_subtype)
 chisq.test(tab_mmc2)
 assocstats(tab_mmc2)$cramer
 adjustedRandIndex(df$my_subtype, df$immune_subtype)
+
+#亚型多因素Cox森林图
+cli <- read.csv("D:/Project/03SCI/250710_LncRCD/Computational and Structural Biotechnology Journal/Supplementary/KIRC/Prognosis/clin.csv",row.names = 1)
+group <- read.csv("KIRC_NMF_subtypes.csv",row.names = 1)
+group$patient_id <- rownames(group)
+cli2 <- cli[cli$patient_id %in% rownames(group),]
+data <- merge(cli2,group,by = "patient_id")
+
+library(survival)
+library(survminer)
+library(dplyr)
+data <- data %>%
+  mutate(
+    time = as.numeric(time),
+    status = as.numeric(status),
+    subtype = factor(subtype,levels = c("C1", "C2", "C3")),
+    gender = factor(gender,levels = c("female", "male")),
+    stage = factor(stage,levels = c("Stage I", "Stage II", "Stage III", "Stage IV")),
+    age = as.numeric(age)
+  )
+dat2 <- data %>%
+  dplyr::select(time, status, subtype, age, gender, stage) %>%
+  na.omit()
+cox_multi <- coxph(Surv(time, status) ~ subtype + age + gender + stage, data = dat2)
+summary(cox_multi)
+
+multi_summary <- summary(cox_multi)
+result_table <- data.frame(
+  Variable = rownames(multi_summary$coefficients),
+  HR = multi_summary$coefficients[, "exp(coef)"],
+  lower95 = multi_summary$conf.int[, "lower .95"],
+  upper95 = multi_summary$conf.int[, "upper .95"],
+  P.value = multi_summary$coefficients[, "Pr(>|z|)"]
+)
+write.csv(result_table, "Subtype_multivariate_cox_results.csv", row.names = FALSE)
+
+ggforest(
+  cox_multi,
+  data = dat2,
+  main = "Multivariate Cox regression analysis of subtype and clinical variables",
+  fontsize = 1.0,
+  refLabel = "Reference",
+  noDigits = 3)
