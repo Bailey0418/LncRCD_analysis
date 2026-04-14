@@ -260,30 +260,11 @@ multi_res <- data.frame(
   pvalue = multi_sum$coefficients[, "Pr(>|z|)"],
   row.names = NULL)
 write.csv(multi_res, "multivariate_cox_result_yuhou.csv", row.names = FALSE)
-multi_res$Variable <- gsub("^riskScore$", "Risk score", multi_res$Variable)
-multi_res$Variable <- gsub("^age$", "Age", multi_res$Variable)
-multi_res$Variable <- gsub("^gendermale$", "Male vs Female", multi_res$Variable)
-multi_res$Variable <- gsub("^stageStage II$", "Stage II vs Stage I", multi_res$Variable)
-multi_res$Variable <- gsub("^stageStage III$", "Stage III vs Stage I", multi_res$Variable)
-multi_res$Variable <- gsub("^stageStage IV$", "Stage IV vs Stage I", multi_res$Variable)
-#独立预后
-tabletext <- cbind(
-  c("Variable", multi_res$Variable),
-  c("HR (95% CI)", paste0(
-    round(multi_res$HR, 3), " (",
-    round(multi_res$lower95, 3), "-",
-    round(multi_res$upper95, 3), ")"
-  )),
-  c("P value", signif(multi_res$pvalue, 3)))
-library(forestplot)
-forestplot(
-  labeltext = tabletext,
-  mean  = c(NA, multi_res$HR),
-  lower = c(NA, multi_res$lower95),
-  upper = c(NA, multi_res$upper95),
-  zero = 1,
-  boxsize = 0.2,
-  line.margin = unit(8, "mm"),
-  col = fpColors(box = "#4575B4", line = "#4575B4", zero = "red"),
-  xlab = "Hazard Ratio",
-  title = "Multivariate Cox Regression")
+
+ggforest(
+  multi_fit,
+  data = dat2,
+  main = "Multivariate Cox regression",
+  fontsize = 1.0,
+  refLabel = "Reference",
+  noDigits = 3)
