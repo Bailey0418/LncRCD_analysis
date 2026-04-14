@@ -168,3 +168,62 @@ ggplot(final_res %>% filter(!is.na(distance)), aes(x = distance/1000)) +
        y = "Count") +
   geom_vline(xintercept = 100, linetype="dashed", color = "red") # 100kb 阈值线
   labs(title = "Zoomed-in View (0-500kb)", x = "Distance (kb)", y = "Count")
+
+#整合标签
+setwd("D:/Project/03SCI/250710_LncRCD/Computational and Structural Biotechnology Journal/Supplementary/label")
+lnctard <- read.csv("D:/Project/03SCI/250710_LncRCD/Computational and Structural Biotechnology Journal/Supplementary/label/lnctard/LncRNA_RCD_Interaction_List.csv")
+disease <- read.csv("D:/Project/03SCI/250710_LncRCD/Computational and Structural Biotechnology Journal/Supplementary/label/Disease/lncRNA_in_database.csv",row.names = 1)
+CIS <- read.csv("D:/Project/03SCI/250710_LncRCD/Computational and Structural Biotechnology Journal/Supplementary/label/CIS/LncRNA_RCD_CIS_List.csv")
+lnctard <- unique(lnctard[,-3])
+library(dplyr)
+library(tidyr)
+library(purrr)
+lnctard2 <- lnctard %>%
+  rename(lncRNA = Regulator)
+disease2 <- disease %>%
+  select(-Confidence_Label) %>%
+  rename(lncRNA = lncRNA)
+CIS2 <- CIS %>%
+  rename(lncRNA = lncRNA_gene_name)
+
+collapse_fun <- function(x) {
+  x <- unique(as.character(x))
+  x <- x[!is.na(x) & x != ""]
+  if (length(x) == 0) NA_character_ else paste(x, collapse = "; ")
+}
+lnctard_sum <- lnctard2 %>%
+  group_by(lncRNA) %>%
+  summarise(across(everything(), collapse_fun), .groups = "drop")
+disease_sum <- disease2 %>%
+  group_by(lncRNA) %>%
+  summarise(across(everything(), collapse_fun), .groups = "drop")
+CIS_sum <- CIS2 %>%
+  group_by(lncRNA) %>%
+  summarise(across(everything(), collapse_fun), .groups = "drop")
+
+presence_df <- full_join(
+  lnctard2 %>% distinct(lncRNA) %>% mutate(in_lnctard = 1),
+  disease2 %>% distinct(lncRNA) %>% mutate(in_disease = 1),
+  by = "lncRNA"
+) %>%
+  full_join(
+    CIS2 %>% distinct(lncRNA) %>% mutate(in_CIS = 1),
+    by = "lncRNA"
+  ) %>%
+  mutate(
+    across(starts_with("in_"), ~replace_na(., 0)),
+    source_count = in_lnctard + in_disease + in_CIS,
+    Confidence_Label = case_when(
+      source_count == 3 ~ "High Confidence",
+      source_count == 2 ~ "Medium Confidence",
+      source_count == 1 ~ "Low Confidence",
+      TRUE ~ NA_character_
+    )
+  )
+
+merged_lnc <- full_join(lnctard_sum, disease_sum, by = "lncRNA") %>%
+  full_join(CIS_sum, by = "lncRNA") %>%
+  left_join(presence_df %>% select(lncRNA, source_count, Confidence_Label),
+            by = "lncRNA")
+head(merged_lnc)
+write.csv(merged_lnc, "merged_lncRNA_annotation.csv", row.names = FALSE)
