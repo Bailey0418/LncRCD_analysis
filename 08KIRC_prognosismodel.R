@@ -223,33 +223,17 @@ legend("bottomright",
 #独立预后分析
 dat2 <- dat[,c("sample", "time", "status", "riskScore", "age", "gender", "stage")]
 dat2 <- as.data.frame(dat2)
-dat2$time <- as.numeric(dat2$time)
-dat2$status <- as.numeric(dat2$status)
-dat2$gender <- as.factor(dat2$gender)
-dat2$stage  <- as.factor(dat2$stage)
-dat$age <- as.numeric(dat$age)
-vars <- c("riskScore", "age", "gender", "stage")
-uni_res <- lapply(vars, function(v){
-  fml <- as.formula(paste0("Surv(time, status) ~ ", v))
-  fit <- coxph(fml, data = dat2)
-  s <- summary(fit)
-  
-  data.frame(
-    Variable = rownames(s$coefficients),
-    HR = s$coefficients[, "exp(coef)"],
-    lower95 = s$conf.int[, "lower .95"],
-    upper95 = s$conf.int[, "upper .95"],
-    pvalue = s$coefficients[, "Pr(>|z|)"],
-    row.names = NULL
+dat2$stage[is.na(dat$stage) | dat$stage == ""] <- "Stage I"
+dat2 <- dat2 %>%
+  mutate(
+    time = as.numeric(time),
+    status = as.numeric(status),
+    riskScore = as.numeric(riskScore),
+    gender = factor(gender,levels = c("female", "male")),
+    stage = factor(stage,levels = c("Stage I", "Stage II", "Stage III", "Stage IV")),
+    age = as.numeric(age)
   )
-})
-uni_res <- do.call(rbind, uni_res)
-uni_res
-
-dat2$gender <- factor(dat2$gender)
-dat2$gender <- relevel(dat2$gender, ref = "female")
-dat2$stage <- factor(dat2$stage)
-dat2$stage <- relevel(dat2$stage, ref = "Stage I")
+vars <- c("riskScore", "age", "gender", "stage")
 multi_fit <- coxph(Surv(time, status) ~ riskScore + age + gender + stage, data = dat2)
 multi_sum <- summary(multi_fit)
 multi_res <- data.frame(
