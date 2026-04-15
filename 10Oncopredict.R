@@ -71,7 +71,7 @@ for(i in 1:length(ceRNA_names)){
 # 退出
 stopImplicitCluster()
 
-#2.2 在每个ceRNA中,riskcore——样本药物反应进行斯皮尔曼相关
+#2.2 在每个lncRNA中,riskcore——样本药物反应进行斯皮尔曼相关
 corr_ce_drug <- corr.test(sample_Riskscore,sample_drug_data,use="pairwise",method="spearman",adjust = "fdr",ci=FALSE)
 corr_ce_drug_r <- as.data.frame(cbind(ceRNA=rownames(corr_ce_drug$r),corr_ce_drug$r))
 corr_ce_drug_r <- gather(corr_ce_drug_r, key = "drug",value = "scc_r",-`ceRNA`)
@@ -114,3 +114,112 @@ p <- ggplot(d1, aes(group, IC50))+
   theme_bw() + theme(panel.grid.major =element_blank(), panel.grid.minor = element_blank(),panel.background = element_blank(),axis.line = element_line(colour = "black"))+
   scale_fill_npg()
 p
+
+setwd("D:/Project/03SCI/250710_LncRCD/Computational and Structural Biotechnology Journal/Supplementary/KIRC/Drug")
+lncRNA_fpkm <- read.csv("E:/RCD/data/cancer/KIRC/fpkm/TCGA_KIRC_lncRNA_tum_fpkm.csv",row.names = 1)
+pcg_fpkm <- read.csv("E:/RCD/data/cancer/KIRC/fpkm/TCGA_KIRC_pcg_tum_fpkm.csv",row.names = 1)
+library(dplyr)
+library(tibble)
+library(msigdbr)
+library(fgsea)
+lnc <- as.matrix(lncRNA_fpkm)
+pcg <- as.matrix(pcg_fpkm)
+storage.mode(lnc) <- "numeric"
+storage.mode(pcg) <- "numeric"
+common_samples <- intersect(colnames(lnc), colnames(pcg))
+length(common_samples)
+lnc <- lnc[, common_samples, drop=FALSE]
+pcg <- pcg[, common_samples, drop=FALSE]
+
+target <- "RP11-116D2.1"
+target %in% rownames(lnc)
+lnc_log <- log2(lnc + 1)
+pcg_log <- log2(pcg + 1)
+x <- as.numeric(lnc_log[target, ])
+names(x) <- colnames(lnc_log)
+summary(x)
+#Spearman相关
+cors <- apply(pcg_log, 1, function(g){
+  suppressWarnings(cor(g, x, method="spearman", use="pairwise.complete.obs"))
+})
+pvals <- apply(pcg_log, 1, function(g){
+  suppressWarnings(cor.test(g, x, method="spearman")$p.value)
+})
+padj <- p.adjust(pvals, method = "BH")
+coexp_tbl <- tibble(
+  gene = rownames(pcg_log),
+  rho  = as.numeric(cors),
+  pval = as.numeric(pvals),
+  padj = as.numeric(padj)
+) %>% arrange(desc(abs(rho)))
+top_coexp_50 <- coexp_tbl %>% slice_head(n=50)
+top_coexp_50
+write.csv(top_coexp_50, "RP11-116D2.1_top50_coexpressed.csv", row.names = FALSE)
+
+genes_of_interest <- c("KDM6A","KDM6B","EZH2","SUZ12","EED",
+                       "TNF","NFKBIA","STAT1","IRF1","HIF1A",
+                       "SLC7A11","GPX4")
+goi_tbl <- coexp_tbl %>% filter(gene %in% genes_of_interest) %>% arrange(desc(abs(rho)))
+goi_tbl
+write.csv(goi_tbl, "RP11-116D2.1_GOI_correlations.csv", row.names = FALSE)
+
+#表达值高低分组做GSEA
+grp <- ifelse(x > median(x, na.rm=TRUE), "High", "Low")
+grp <- factor(grp, levels=c("Low","High"))
+table(grp)
+get_tstat <- function(g){
+  hi <- g[grp=="High"]
+  lo <- g[grp=="Low"]
+  if(sd(g, na.rm=TRUE) < 1e-6) return(NA_real_)
+  tt <- try(t.test(hi, lo), silent=TRUE)
+  if(inherits(tt, "try-error")) return(NA_real_)
+  as.numeric(tt$statistic)
+}
+tstats <- apply(pcg_log, 1, get_tstat)
+tstats <- tstats[!is.na(tstats)]
+tstats <- sort(tstats, decreasing = TRUE)
+head(tstats)
+
+msig_h <- msigdbr(species = "Homo sapiens", category = "H") %>%
+  dplyr::select(gs_name, gene_symbol)
+pathways_h <- split(msig_h$gene_symbol, msig_h$gs_name)
+set.seed(1234)
+fg_h <- fgsea(pathways = pathways_h, stats = tstats, nperm = 10000) %>%
+  arrange(padj)
+top10_h <- fg_h %>% slice_head(n=10) %>% dplyr::select(pathway, NES, padj)
+top10_h
+write.csv(top10_h, "RP11-116D2.1_GSEA_Top10_Hallmark.csv", row.names = FALSE)
+
+#表达高低分组KDM6A/KDM6B箱线图
+pcg_log[c("KDM6A","KDM6B"), 1:5]
+plot_df <- data.frame(
+  sample = colnames(pcg_log),
+  group  = grp,
+  KDM6A  = as.numeric(pcg_log["KDM6A", colnames(pcg_log)]),
+  KDM6B  = as.numeric(pcg_log["KDM6B", colnames(pcg_log)])
+)
+head(plot_df)
+library(ggplot2)
+library(ggpubr)
+library(tidyr)
+library(dplyr)
+plot_long <- plot_df %>%
+  pivot_longer(cols = c("KDM6A","KDM6B"),
+               names_to = "Gene",
+               values_to = "Expression")
+head(plot_long)
+p1 <- ggplot(plot_long, aes(x = group, y = Expression, fill = group)) +
+  geom_boxplot(width = 0.65, outlier.shape = NA, alpha = 0.8) +
+  geom_jitter(width = 0.15, size = 1.2, alpha = 0.6) +
+  stat_compare_means(method = "wilcox.test", label = "p.format") +
+  facet_wrap(~Gene, scales = "free_y") +
+  scale_fill_manual(values = c("Low" = "#4DBBD5", "High" = "#E64B35")) +
+  theme_bw(base_size = 13) +
+  labs(x = "RP11-116D2.1 group", y = "log2(FPKM+1)",
+       title = "KDM6A/KDM6B expression in RP11-116D2.1 high vs low groups") +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    legend.position = "right",
+    strip.background = element_rect(fill = "grey90")
+  )
+p1
