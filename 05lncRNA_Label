@@ -175,55 +175,91 @@ lnctard <- read.csv("D:/Project/03SCI/250710_LncRCD/Computational and Structural
 disease <- read.csv("D:/Project/03SCI/250710_LncRCD/Computational and Structural Biotechnology Journal/Supplementary/label/Disease/lncRNA_in_database.csv",row.names = 1)
 CIS <- read.csv("D:/Project/03SCI/250710_LncRCD/Computational and Structural Biotechnology Journal/Supplementary/label/CIS/LncRNA_RCD_CIS_List.csv")
 lnctard <- unique(lnctard[,-3])
+
 library(dplyr)
 library(tidyr)
-library(purrr)
-lnctard2 <- lnctard %>%
-  rename(lncRNA = Regulator)
-disease2 <- disease %>%
-  select(-Confidence_Label) %>%
-  rename(lncRNA = lncRNA)
-CIS2 <- CIS %>%
-  rename(lncRNA = lncRNA_gene_name)
-
-collapse_fun <- function(x) {
+library(stringr)
+collapse_cell <- function(x, sep = "; ") {
   x <- unique(as.character(x))
   x <- x[!is.na(x) & x != ""]
-  if (length(x) == 0) NA_character_ else paste(x, collapse = "; ")
+  if (length(x) == 0) NA_character_ else paste(x, collapse = sep)
 }
+cis2 <- CIS %>%
+  rename(lncRNA = lncRNA_gene_name)
+lnctard2 <- lnctard %>%
+  rename(lncRNA = Regulator)
+disease2 <- disease
+if ("Confidence_Label" %in% colnames(disease2)) {
+  disease2 <- disease2 %>% select(-Confidence_Label)
+}
+to_logical <- function(x) {
+  if (is.logical(x)) return(x)
+  if (is.numeric(x)) return(x == 1)
+  x <- tolower(trimws(as.character(x)))
+  x %in% c("true", "t", "1", "yes", "y")
+}
+disease_presence <- disease2 %>%
+  mutate(
+    In_EVLncRNAs     = to_logical(In_EVLncRNAs),
+    In_Lnc2cancer    = to_logical(In_Lnc2cancer),
+    In_LncRNADisease = to_logical(In_LncRNADisease),
+    in_disease = (In_EVLncRNAs %in% TRUE) | (In_Lnc2cancer %in% TRUE) | (In_LncRNADisease %in% TRUE)
+  ) %>%
+  group_by(lncRNA) %>%
+  summarise(
+    in_disease = any(in_disease, na.rm = TRUE),
+    In_EVLncRNAs     = any(In_EVLncRNAs %in% TRUE, na.rm = TRUE),
+    In_Lnc2cancer    = any(In_Lnc2cancer %in% TRUE, na.rm = TRUE),
+    In_LncRNADisease = any(In_LncRNADisease %in% TRUE, na.rm = TRUE),
+    .groups = "drop"
+  )
+cis_sum <- cis2 %>%
+  group_by(lncRNA) %>%
+  summarise(
+    lncRNA_id     = collapse_cell(lncRNA_id),
+    pcg_gene_name = collapse_cell(pcg_gene_name),
+    pcg_id        = collapse_cell(pcg_id),
+    distance      = collapse_cell(distance),
+    type          = collapse_cell(type),
+    in_cis = TRUE,
+    .groups = "drop"
+  )
 lnctard_sum <- lnctard2 %>%
   group_by(lncRNA) %>%
-  summarise(across(everything(), collapse_fun), .groups = "drop")
-disease_sum <- disease2 %>%
-  group_by(lncRNA) %>%
-  summarise(across(everything(), collapse_fun), .groups = "drop")
-CIS_sum <- CIS2 %>%
-  group_by(lncRNA) %>%
-  summarise(across(everything(), collapse_fun), .groups = "drop")
-
-presence_df <- full_join(
-  lnctard2 %>% distinct(lncRNA) %>% mutate(in_lnctard = 1),
-  disease2 %>% distinct(lncRNA) %>% mutate(in_disease = 1),
-  by = "lncRNA"
+  summarise(
+    Target = collapse_cell(Target),
+    in_lnctard = TRUE,
+    .groups = "drop"
+  )
+all_lnc <- bind_rows(
+  cis2 %>% distinct(lncRNA),
+  disease2 %>% distinct(lncRNA),
+  lnctard2 %>% distinct(lncRNA)
 ) %>%
-  full_join(
-    CIS2 %>% distinct(lncRNA) %>% mutate(in_CIS = 1),
-    by = "lncRNA"
-  ) %>%
+  distinct(lncRNA)
+final_table <- all_lnc %>%
+  left_join(cis_sum, by = "lncRNA") %>%
+  left_join(disease_presence, by = "lncRNA") %>%
+  left_join(lnctard_sum, by = "lncRNA") %>%
   mutate(
-    across(starts_with("in_"), ~replace_na(., 0)),
-    source_count = in_lnctard + in_disease + in_CIS,
+    in_cis     = replace_na(in_cis, FALSE),
+    in_lnctard = replace_na(in_lnctard, FALSE),
+    in_disease = replace_na(in_disease, FALSE),
+    score = as.integer(in_cis) + as.integer(in_disease) + as.integer(in_lnctard),
     Confidence_Label = case_when(
-      source_count == 3 ~ "High Confidence",
-      source_count == 2 ~ "Medium Confidence",
-      source_count == 1 ~ "Low Confidence",
+      score == 3 ~ "High Confidence",
+      score == 2 ~ "Medium Confidence",
+      score == 1 ~ "Low Confidence",
+      score == 0 ~ "Candidate",
       TRUE ~ NA_character_
     )
+  ) %>%
+  select(
+    lncRNA, score, Confidence_Label,
+    in_cis, in_disease, in_lnctard,
+    everything()
   )
-
-merged_lnc <- full_join(lnctard_sum, disease_sum, by = "lncRNA") %>%
-  full_join(CIS_sum, by = "lncRNA") %>%
-  left_join(presence_df %>% select(lncRNA, source_count, Confidence_Label),
-            by = "lncRNA")
-head(merged_lnc)
-write.csv(merged_lnc, "merged_lncRNA_annotation.csv", row.names = FALSE)
+head(final_table)
+final_table_conf <- final_table %>%
+  filter(Confidence_Label %in% c("High Confidence", "Medium Confidence", "Low Confidence"))
+write.csv(final_table_conf, "merged_lncRNA_annotation.csv", row.names = FALSE)
